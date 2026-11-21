@@ -1,193 +1,300 @@
-# PG-NMF: Pathway-Guided Graph Regularized Non-Negative Matrix Factorization
+# PGNMF
 
-PG-NMF is a pathway-guided graph regularized non-negative matrix factorization framework for single-cell RNA-seq imputation. This method integrates biological pathway knowledge into the NMF framework through graph regularization, improving the accuracy and biological interpretability of imputation results.
+**Pathway-Guided Hierarchical Sparse Non-Negative Matrix Factorization for scRNA-seq Imputation**
 
-## Method Overview
+PGNMF is a pathway-guided, graph-regularized non-negative matrix factorization framework for imputing single-cell RNA-sequencing (scRNA-seq) expression data. It is designed to recover missing expression values while retaining cellular heterogeneity and biologically meaningful gene relationships.
 
-PG-NMF employs three key strategies to enhance single-cell RNA-seq imputation:
+The method combines four complementary components:
 
-1. **Pathway-guided gene graph regularization**: Constructs a gene similarity graph based on shared pathway membership and expression rank differentials, guiding the factorization to preserve biologically meaningful gene relationships.
+1. **Pathway-guided gene graph.** Gene relationships are informed by shared pathway membership and expression-rank agreement.
+2. **Cell-neighborhood graph.** A sparse cell graph captures local relationships between cells in the expression space.
+3. **Hierarchical gene sparsity.** Different sparsity penalties are assigned to pathway-annotated and non-annotated genes, allowing pathway-supported genes to receive a less stringent penalty.
+4. **Weak zero-background regularization.** A balanced, weak penalty regulates predictions at zero-valued input positions to limit unsupported background signals.
 
-2. **Cell similarity graph regularization**: Builds a cell similarity network using PCA-based k-nearest neighbors, ensuring cells with similar expression profiles are mapped close together in the latent space.
+This repository provides the PGNMF core implementation, graph and pathway utilities, a command-line example for prepared expression matrices, and a small solver smoke test. For the methodological formulation and the full experimental design, please refer to the accompanying manuscript.
 
-3. **Adaptive sparsity constraints**: Applies pathway-aware sparsity penalties that are more lenient for genes within known pathways and stricter for unannotated genes, balancing imputation completeness and noise reduction.
+## Method overview
 
-## Requirements
+The workflow takes a prepared, masked cell-by-gene expression matrix and the corresponding gene symbols and pathway collection. It constructs the pathway-guided gene graph, the cell-neighborhood graph, and gene-specific sparsity penalties, and then estimates non-negative cell and gene factors.
 
-- Python 3.11+
-- scanpy
-- numpy
-- scipy
-- networkx
-- scikit-learn
-- matplotlib
-- seaborn
-- gseapy
-- umap-learn
-- anndata
-- pandas
+The released solver processes gene updates in computational blocks while retaining the complete gene graph, including cross-block gene relationships. The block size controls computational chunking.
+
+## Repository contents
+
+```text
+PGNMF/
+├── src/
+│   └── pgnmf/
+│       ├── __init__.py
+│       ├── solver.py             # PGNMF multiplicative-update solver
+│       ├── gene_graph.py         # Pathway-guided gene graph construction
+│       ├── cell_graph.py         # PCA-based cell kNN graph construction
+│       ├── pathway_sparsity.py   # Pathway membership and gene-specific penalties
+│       ├── postprocess.py        # Exact top-k post-processing utilities
+│       ├── masking.py            # Simulated-missing mask utilities
+│       ├── matrix_utils.py       # Matrix helper functions
+│       └── metrics.py            # Masked-expression evaluation metrics
+├── examples/
+│   └── run_from_prepared.py      # Example command-line workflow
+├── tests/
+│   └── test_solver_smoke.py      # Small synthetic solver test
+├── reproducibility/
+│   ├── scripts/                  # Selected manuscript analyses
+│   ├── legacy/                   # Minimal compatibility helpers
+│   ├── configs/                  # Example experiment configuration
+│   └── requirements-experiments.txt
+├── LICENSE
+├── README.md
+├── requirements.txt
+├── requirements-dev.txt
+└── pyproject.toml
+```
+
+### Scope of this release
+
+This release contains the core algorithm, a prepared-input example workflow, and a curated set of scripts for selected manuscript analyses. It does **not** bundle raw scRNA-seq datasets, controlled-access clinical data, the MSigDB/KEGG pathway collection, intermediate caches, or benchmark result tables. See `reproducibility/README.md` for the included analyses and their reproduction requirements.
 
 ## Installation
 
+### Requirements
+
+- Python 3.10 or later
+- NumPy
+- SciPy
+- scikit-learn
+
+The package dependencies are listed in `requirements.txt`.
+
+### Install from GitHub
+
 ```bash
+git clone https://github.com/yanyunchen1221-design/PGNMF.git
+cd PGNMF
+
+python -m venv .venv
+```
+
+Activate the environment:
+
+```bash
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+```
+
+Install PGNMF and its dependencies:
+
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+pip install -e .
 ```
 
-Or install dependencies individually:
+To run the included solver smoke test:
 
 ```bash
-pip install scanpy numpy scipy networkx scikit-learn matplotlib seaborn gseapy umap-learn anndata pandas
+pip install -r requirements-dev.txt
+pytest -q
 ```
 
-## Project Structure
+The smoke test uses a small synthetic matrix generated within the test; it does not reproduce the full manuscript benchmarks.
 
+## Input preparation
+
+The example runner expects the following files:
+
+| Input | Format | Description |
+|---|---|---|
+| `X_model.npy` | NumPy array | Dense, finite, non-negative masked expression matrix. Rows are cells and columns are selected model genes. |
+| `all_gene_symbols.npy` | NumPy array | Gene symbols for the complete gene universe before model-gene selection. |
+| `model_gene_symbols.npy` | NumPy array | Gene symbols for the selected model genes, in exactly the same order as the columns of `X_model.npy`. |
+| `pathways.gmt` | GMT text file | Pathway gene sets used to construct the pathway-guided gene graph and gene-specific sparsity penalties. |
+
+The matrix preprocessing and model-gene selection are dataset- and experiment-specific. For reproducing the manuscript experiments, prepare the expression matrix using the normalization, transformation, and feature-selection procedure described in the manuscript and Supplementary Data. The example runner does not perform raw-count normalization or highly-variable-gene selection.
+
+When evaluating simulated missing values, `X_model.npy` must contain the masked input matrix. The cell graph and pathway-rank gene graph are constructed from this masked matrix; do not construct them from an unmasked reference matrix.
+
+### Preparing NumPy inputs from AnnData
+
+If the prepared data are already available as an AnnData object, the required arrays can be saved as follows. Here, `model_mask` is a Boolean mask identifying the selected model genes.
+
+```python
+import numpy as np
+from scipy import sparse
+
+X_model = adata_masked[:, model_mask].X
+if sparse.issparse(X_model):
+    X_model = X_model.toarray()
+
+np.save("X_model.npy", np.asarray(X_model, dtype=np.float32))
+np.save(
+    "all_gene_symbols.npy",
+    adata_masked.var_names.astype(str).to_numpy(),
+)
+np.save(
+    "model_gene_symbols.npy",
+    adata_masked.var_names[model_mask].astype(str).to_numpy(),
+)
 ```
-PGNMF/
-├── pgnmf.py               # Core PG-NMF algorithm implementation
-│   ├── run_pathway_guided_pgnmf()  # Main function for imputation
-│   ├── nmf_pathway_aware_fixed()    # Pathway-aware NMF factorization
-│   ├── calculate_pathway_guided_rank_differential()  # Gene similarity graph
-│   └── build_cell_similarity_network_scalable()      # Cell similarity network
-├── factor_analysis.py     # NMF factor analysis and visualization
-│   └── NMFAnalyzer        # Class for factor pathway enrichment and cell type association
-├── evaluation.py          # Evaluation metrics for imputation and clustering
-│   └── scRNAEvaluatorFixed  # Class for ARI, NMI, RMSE, and sparsity evaluation
-├── visualization.py       # Result visualization functions
-│   ├── plot_main_results()       # Main figure generation
-│   └── plot_supplementary()     # Supplementary figure generation
-├── simulation.py          # Simulated missing value generation
-│   └── SimulatedMissingEvaluator  # Class for mask generation
-├── run_experiment.py      # Complete experiment workflow
-│   └── run_complete_experiment()  # End-to-end pipeline
-└── requirements.txt       # Dependency list
-```
 
-## Usage
+The number and order of columns in `X_model.npy` must match `model_gene_symbols.npy` exactly. The model-gene symbols must be a subset of the full gene-symbol universe represented by `all_gene_symbols.npy`.
 
-### Quick Start
+## Pathway gene-set resource
+
+The runner requires a pathway collection in standard GMT format. The manuscript workflow uses the human MSigDB C2:CP:KEGG_LEGACY collection (for example, `c2.cp.kegg_legacy.v2025.1.Hs.symbols.gmt`).
+
+Download the appropriate human gene-set file from [MSigDB](https://www.gsea-msigdb.org/gsea/msigdb/) and follow the applicable registration, citation, and license terms. The GMT file is not included in this repository because it is a third-party resource and the KEGG_LEGACY gene sets have additional copyright and licensing conditions. The MIT License in this repository applies to the PGNMF software code; it does not relicense third-party pathway data.
+
+See the [MSigDB license terms](https://www.gsea-msigdb.org/gsea/msigdb_license_terms.jsp), including the additional terms for KEGG-derived gene sets. If redistributing a pathway file, first verify that the specific collection and version may be redistributed under its applicable terms.
+
+## Run PGNMF
+
+After preparing the four input files, run:
 
 ```bash
-python run_experiment.py
+python examples/run_from_prepared.py \
+  --x-model data/X_model.npy \
+  --all-gene-symbols data/all_gene_symbols.npy \
+  --model-gene-symbols data/model_gene_symbols.npy \
+  --gmt data/pathways.gmt \
+  --output-dir results \
+  --rank 80 \
+  --alpha-cell 10 \
+  --alpha-gene 2 \
+  --zero-weight 0.13577193 \
+  --sparsity-strength 10 \
+  --pathway-weight 0.5 \
+  --nonpathway-weight 1.0 \
+  --max-iter 100 \
+  --tol 1e-4 \
+  --seed 42 \
+  --block-size 500
 ```
 
-### Custom Configuration
+**Parameter note:** The values above illustrate the confirmed C11 Stage2C8 configuration (`rank=80`, `alpha_cell=10`, `alpha_gene=2`, `beta=1`, and hierarchical sparsity strength `10`). They are not universal defaults for every dataset. Use the frozen settings documented for the dataset and experiment being reproduced.
 
-Edit the `run_experiment.py` to customize parameters:
+For simulated-missing evaluation, held-out coordinates can optionally be excluded from the weak zero-background penalty. Supply an `.npz` file containing two arrays named `rows` and `cols`:
+
+```bash
+python examples/run_from_prepared.py ... \
+  --zero-penalty-exclusions data/heldout_model_coordinates.npz
+```
+
+The row and column indices must refer to `X_model.npy` (the selected model-gene matrix), not the full unfiltered gene matrix.
+
+## Parameters
+
+The command-line runner exposes the following parameters.
+
+### Required parameters
+
+| Parameter | Meaning |
+|---|---|
+| `--x-model` | Path to the masked model-gene expression matrix (`.npy`). |
+| `--all-gene-symbols` | Path to the full gene-symbol array (`.npy`). |
+| `--model-gene-symbols` | Path to the model-gene-symbol array (`.npy`), ordered to match `X_model`. |
+| `--gmt` | Path to the pathway collection in GMT format. |
+| `--output-dir` | Directory in which results are written. |
+| `--rank` | Number of latent factors, \(r\). |
+| `--alpha-cell` | Cell-graph regularization coefficient. |
+| `--alpha-gene` | Gene-graph regularization coefficient. |
+| `--zero-weight` | Effective weak zero-background weight, \(q_0\), constrained to the interval [0, 1]. |
+| `--sparsity-strength` | Overall strength of the hierarchical gene-specific sparsity penalty. |
+
+### Optional parameters
+
+| Parameter | Default | Meaning |
+|---|---:|---|
+| `--pathway-weight` | `0.5` | Relative sparsity weight for pathway-annotated genes. |
+| `--nonpathway-weight` | `1.0` | Relative sparsity weight for genes without pathway annotation. It should exceed `pathway-weight` when the sparsity strength is positive. |
+| `--max-iter` | `100` | Maximum number of solver iterations. |
+| `--tol` | `1e-4` | Relative objective-change tolerance used by the convergence check. |
+| `--seed` | `42` | Random seed used for reproducible initialization and graph construction. |
+| `--lambda-reg` | `1e-3` | L2 regularization coefficient. |
+| `--lambda-w-l1` | `0.0` | L1 regularization coefficient for the cell-factor matrix \(W\). |
+| `--block-size` | `500` | Number of genes processed per computational block. This is a computational setting, not a model hyperparameter. |
+| `--min-pathway-genes` | `10` | Minimum number of dataset-overlapping genes required to retain a pathway. |
+| `--max-pathway-genes` | `500` | Maximum number of dataset-overlapping genes allowed for a retained pathway. |
+| `--gene-edge-batch-size` | `256` | Number of gene-pair edges processed per batch during gene-graph construction. |
+| `--graph-pcs` | `30` | Number of principal components used to construct the cell graph, subject to the matrix dimensions. |
+| `--graph-neighbors` | `15` | Number of nearest neighbors used to construct the cell graph. |
+| `--graph-metric` | `euclidean` | Distance metric used for cell-neighbor search. |
+| `--zero-penalty-exclusions` | None | Optional `.npz` file containing `rows` and `cols` arrays of local coordinates excluded from the zero-background penalty. |
+| `--save-reconstruction` | Off | If specified, saves the reconstructed model-gene matrix as `X_hat_model.npy`. |
+
+The pathway sparsity penalty is gene-specific: pathway-annotated genes receive `sparsity-strength × pathway-weight`, whereas non-annotated genes receive `sparsity-strength × nonpathway-weight`.
+
+`--zero-weight` is the effective zero-background weight passed to the solver. When using the balanced weighting scheme described in the manuscript, calculate this value from the masked model-gene matrix according to the manuscript's definition before running the command. The resulting value must lie in [0, 1].
+
+## Outputs
+
+The example runner writes the following files to `--output-dir`:
+
+| Output | Description |
+|---|---|
+| `pgnmf_factors.npz` | Contains the learned factor matrices `W` and `H`, the objective trace (`losses`), and the model-gene symbols. |
+| `run_summary.json` | Records the input matrix shape, parameter settings, solver summary, pathway-membership information, and gene- and cell-graph diagnostics. |
+| `X_hat_model.npy` | Optional reconstructed model-gene expression matrix (`W @ H`); generated only when `--save-reconstruction` is specified. |
+
+The factor matrices have dimensions `W: (n_cells, rank)` and `H: (rank, n_model_genes)`.
+
+The `pgnmf.postprocess` module also provides an exact top-k post-processing utility that preserves observed entries and selects a specified number of zero-valued positions for filling. This utility is separate from the example runner's factor-fitting step.
+
+## Python API
+
+The core solver can also be called directly after constructing the cell graph, gene graph, and gene-specific sparsity penalty:
 
 ```python
-config = {
-    'adata_path': './data/C01_annotated_celltypist.h5ad',
-    'gmt_file': 'c2.cp.kegg_legacy.v2025.1.Hs.symbols.gmt',
-    'output_dir': './results_c01',
-    
-    # NMF parameters
-    'rank': 20,              # Number of latent factors
-    'alpha_gene': 0.05,      # Gene graph regularization weight
-    'alpha_cell': 0.05,      # Cell graph regularization weight
-    'lambda_reg': 0.5,       # L2 regularization weight
-    'lambda_sparse': 5.0,    # Sparsity penalty weight
-    
-    # Preprocessing parameters
-    'n_hvgs': 2000,          # Number of highly variable genes
-    'n_pcs': 50,             # Number of principal components
-    'leiden_resolution': 0.4, # Clustering resolution
-    
-    # Simulation parameters
-    'simulated_mask_ratio': 0.1,    # Ratio of values to mask for evaluation
-    'simulated_random_seed': 42,
-    
-    'organism': 'human',
-    'n_jobs': -1
-}
+from pgnmf.solver import zero_aware_nmf_mu_blocked
+
+fit = zero_aware_nmf_mu_blocked(
+    X_model,
+    S_cell=S_cell,
+    degree_cell=degree_cell,
+    alpha_cell=alpha_cell,
+    S_gene=S_gene,
+    degree_gene=degree_gene,
+    alpha_gene=alpha_gene,
+    lambda_h_gene=lambda_h_gene,
+    zero_weight=zero_weight,
+    rank=rank,
+    max_iter=100,
+    tol=1e-4,
+    random_state=42,
+    lambda_reg=1e-3,
+    block_size=500,
+)
+
+W = fit.W
+H = fit.H
+X_hat_model = W @ H
 ```
 
-### Using the API Directly
+The graph and penalty inputs can be prepared with the utilities in `pgnmf.cell_graph`, `pgnmf.gene_graph`, and `pgnmf.pathway_sparsity`.
 
-```python
-from pgnmf import run_pathway_guided_pgnmf
-from factor_analysis import NMFAnalyzer
-from evaluation import scRNAEvaluatorFixed
+## Reproducing manuscript analyses
 
-# Run imputation
-adata_imputed, results = run_pathway_guided_pgnmf(
-    adata=adata,
-    gmt_file='c2.cp.kegg_legacy.v2025.1.Hs.symbols.gmt',
-    rank=20,
-    alpha_gene=0.05,
-    alpha_cell=0.05,
-    lambda_reg=0.5,
-    lambda_sparse=5.0
-)
+Selected scripts for the main single-dataset workflow, ablations, convergence,
+parameter sensitivity, and biological analyses are provided under
+[`reproducibility/`](reproducibility/). Standalone plot-only scripts and
+temporary visualization experiments are intentionally omitted; some analysis
+scripts generate figures as part of their outputs.
 
-# Analyze factors
-analyzer = NMFAnalyzer(
-    W=results['W'],
-    H=results['H'],
-    adata=adata_imputed,
-    pathway_dict=results['pathway_dict'],
-    output_dir='./results'
-)
-factor_pathways = analyzer.factor_pathway_enrichment(top_n_genes=50)
-
-# Evaluate results
-evaluator = scRNAEvaluatorFixed(
-    adata_original=adata,
-    adata_imputed=adata_imputed,
-    true_labels=adata.obs['celltype'].values
-)
-evaluator.evaluate_imputation_accuracy()
-evaluator.evaluate_clustering_with_precomputed(pred_labels=adata_imputed.obs['leiden'].values)
-```
-
-## Input Requirements
-
-### Gene Expression Data
-
-- **Format**: `.h5ad` (AnnData) or `.mat` (MATLAB)
-- **Content**: Raw count matrix with cells as rows and genes as columns
-- **Optional**: Cell type annotations in `adata.obs['celltype']` or similar columns
-
-### Pathway Annotation File
-
-- **Format**: GMT (Gene Matrix Transposed)
-- **Source**: MSigDB (Molecular Signatures Database)
-- **Download**: https://www.gsea-msigdb.org/gsea/msigdb
-- **Example**: `c2.cp.kegg_legacy.v2025.1.Hs.symbols.gmt`
-
-## Output
-
-The pipeline generates the following outputs in the specified `output_dir`:
-
-### Data Files
-- `adata_final.h5ad` - Imputed AnnData object with clustering results
-- `nmf_matrices.npz` - NMF factor matrices (W, H) with gene and cell names
-- `evaluation_report.csv` - Quantitative evaluation metrics
-- `clustering_resolutions.csv` - Clustering metrics across different resolutions
-- `factor_pathway_enrichment.csv` - Pathway enrichment results for each factor
-- `summary.json` - Experiment summary statistics
-
-### Figures
-- `Figure_Main.pdf` - Main results including UMAP, confusion matrix, and metrics
-- `Figure_Supplementary.pdf` - Supplementary figures with factor activity heatmaps
-- `evaluation_comparison.pdf` - Visual comparison of imputation quality
-- `top_factors_genes.pdf` - Top genes for each factor
-- `factor_umap_distribution.pdf` - Factor activity distribution on UMAP
-- `factor_celltype_heatmap.pdf` - Factor activity across cell types
-
-### PG-NMF Specific Outputs
-- `pathway_pgnmf_overview.pdf` - Method overview visualization
-- `pathway_pgnmf_pathway_networks.pdf` - Pathway network visualization
-- `pathway_pgnmf_adata.h5ad` - Intermediate results
-- `pathway_pgnmf_networks.npz` - Network matrices
-
-## Dataset
-
-All public datasets used in the study are available from the repositories listed in Supplementary Table S1.
+See [`reproducibility/README.md`](reproducibility/README.md) for the script
+index, installation instructions, required inputs, and current limitations.
+The public release does not include datasets, GMT pathway files, masks, or
+intermediate experiment caches. The complete manuscript analyses have not
+been rerun end-to-end from this release.
 
 ## Citation
 
-Coming soon.
+If you use PGNMF in academic work, please cite the associated manuscript.
+Full bibliographic information and a persistent identifier will be added
+here when they are available.
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for
+the full license text.
