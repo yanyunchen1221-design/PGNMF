@@ -1,0 +1,13 @@
+# Additional dependencies for the selected manuscript analysis scripts.
+# Install the core package first: python -m pip install -e .
+anndata>=0.10
+scanpy>=1.10
+python-igraph>=0.11
+leidenalg>=0.10
+matplotlib>=3.7
+seaborn>=0.13
+umap-learn>=0.5
+pandas>=2.0
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.2
